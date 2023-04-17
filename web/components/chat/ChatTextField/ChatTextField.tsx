@@ -1,7 +1,8 @@
-import { Popover } from 'antd';
-import React, { FC, useMemo, useState } from 'react';
+/* eslint-disable jsx-a11y/no-static-element-interactions */
+import { Popover, Select } from 'antd';
+import React, { FC, useCallback, useMemo, useRef, useState } from 'react';
 import { useRecoilValue } from 'recoil';
-import { Transforms, createEditor, BaseEditor, Text, Descendant, Editor } from 'slate';
+import { Transforms, createEditor, BaseEditor, Text, Descendant, Editor, Range } from 'slate';
 import { Slate, Editable, withReact, ReactEditor, useSelected, useFocused } from 'slate-react';
 import dynamic from 'next/dynamic';
 import classNames from 'classnames';
@@ -24,7 +25,10 @@ const SmileOutlined = dynamic(() => import('@ant-design/icons/SmileOutlined'), {
   ssr: false,
 });
 
-type CustomElement = { type: 'paragraph' | 'span'; children: CustomText[] } | ImageNode;
+type CustomElement =
+  | { type: 'paragraph' | 'span'; children: CustomText[] }
+  | ImageNode
+  | MentionElement;
 type CustomText = { text: string };
 
 type EmptyText = {
@@ -37,6 +41,12 @@ type ImageNode = {
   src: string;
   name: string;
   children: EmptyText[];
+};
+
+type MentionElement = {
+  type: 'mention';
+  name: string;
+  children: CustomText[];
 };
 
 declare module 'slate' {
@@ -70,6 +80,17 @@ const Image = p => {
   );
 };
 
+const Mention = p => {
+  const { attributes, element, children } = p;
+
+  return (
+    <span {...attributes} className={styles.userMention} contentEditable={false}>
+      @{element.name}&nbsp;
+      {children}
+    </span>
+  );
+};
+
 const withImages = editor => {
   const { isVoid } = editor;
 
@@ -77,6 +98,17 @@ const withImages = editor => {
   editor.isVoid = element => (element.type === 'image' ? true : isVoid(element));
   // eslint-disable-next-line no-param-reassign
   editor.isInline = element => element.type === 'image';
+
+  return editor;
+};
+
+const withMentions = editor => {
+  const { isInline, isVoid } = editor;
+
+  // eslint-disable-next-line no-param-reassign
+  editor.isInline = element => (element.type === 'mention' ? true : isInline(element));
+  // eslint-disable-next-line no-param-reassign
+  editor.isVoid = element => (element.type === 'mention' ? true : isVoid(element));
 
   return editor;
 };
@@ -99,6 +131,8 @@ const serialize = node => {
       return `<p>${children}</p>`;
     case 'image':
       return `<img src="${node.src}" alt="${node.alt}" title="${node.name}" class="emoji"/>`;
+    case 'mention':
+      return `@${node.name}&nbsp;`;
     default:
       return children;
   }
@@ -108,6 +142,8 @@ const getCharacterCount = node => {
   if (Text.isText(node)) {
     return node.text.length;
   }
+
+  // Hard code each image to count as 5 characters.
   if (node.type === 'image') {
     return 5;
   }
@@ -123,15 +159,28 @@ const getCharacterCount = node => {
 export type ChatTextFieldProps = {
   defaultText?: string;
   enabled: boolean;
+  knownChatUserDisplayNames?: string[];
 };
 
 const characterLimit = 300;
 
-export const ChatTextField: FC<ChatTextFieldProps> = ({ defaultText, enabled }) => {
+export const ChatTextField: FC<ChatTextFieldProps> = ({
+  defaultText,
+  enabled,
+  knownChatUserDisplayNames,
+}) => {
   const [showEmojis, setShowEmojis] = useState(false);
   const [characterCount, setCharacterCount] = useState(defaultText?.length);
+  const [showingAutoCompleteMenu, setShowingAutoCompleteMenu] = useState(false);
   const websocketService = useRecoilValue<WebsocketService>(websocketServiceAtom);
-  const editor = useMemo(() => withReact(withImages(createEditor())), []);
+  const editor = useMemo(() => withReact(withMentions(withImages(createEditor()))), []);
+  const inputRef = useRef<HTMLDivElement>(null);
+
+  const [search, setSearch] = useState('');
+
+  const chatUserNames = knownChatUserDisplayNames
+    ?.filter(c => c.toLowerCase().startsWith(search.toLowerCase()))
+    .slice(0, 10);
 
   const defaultEditorValue: Descendant[] = [
     {
@@ -176,6 +225,16 @@ export const ChatTextField: FC<ChatTextFieldProps> = ({ defaultText, enabled }) 
     Editor.normalize(editor, { force: true });
   };
 
+  const insertMention = (e, chatDisplayName) => {
+    const mention: MentionElement = {
+      type: 'mention',
+      name: chatDisplayName,
+      children: [{ text: '' }],
+    };
+    Transforms.insertNodes(e, mention);
+    Transforms.move(e);
+  };
+
   // Native emoji
   const onEmojiSelect = (emoji: string) => {
     ReactEditor.focus(editor);
@@ -187,29 +246,32 @@ export const ChatTextField: FC<ChatTextFieldProps> = ({ defaultText, enabled }) 
     insertImage(emoji, name);
   };
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const charCount = getCharacterCount(editor) + 1;
+  const onKeyDown = useCallback(
+    e => {
+      const charCount = getCharacterCount(editor) + 1;
 
-    // Send the message when hitting enter.
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      sendMessage();
-      return;
-    }
+      // Send the message when hitting enter.
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        sendMessage();
+        return;
+      }
 
-    // Always allow backspace.
-    if (e.key === 'Backspace') {
-      setCharacterCount(charCount - 1);
-      return;
-    }
+      // Always allow backspace.
+      if (e.key === 'Backspace') {
+        setCharacterCount(charCount - 1);
+        return;
+      }
 
-    // Limit the number of characters.
-    if (charCount + 1 > characterLimit) {
-      e.preventDefault();
-    }
+      // Limit the number of characters.
+      if (charCount + 1 > characterLimit) {
+        e.preventDefault();
+      }
 
-    setCharacterCount(charCount + 1);
-  };
+      setCharacterCount(charCount + 1);
+    },
+    [editor],
+  );
 
   const onPaste = (e: React.ClipboardEvent) => {
     const text = e.clipboardData.getData('text/plain');
@@ -224,6 +286,10 @@ export const ChatTextField: FC<ChatTextFieldProps> = ({ defaultText, enabled }) 
     switch (p.element.type) {
       case 'image':
         return <Image {...p} />;
+
+      case 'mention':
+        return <Mention {...p} />;
+
       default:
         return <p {...p} />;
     }
@@ -232,12 +298,36 @@ export const ChatTextField: FC<ChatTextFieldProps> = ({ defaultText, enabled }) 
   return (
     <div className={styles.root}>
       <div
+        ref={inputRef}
         className={classNames(
           styles.inputWrap,
           characterCount >= characterLimit && styles.maxCharacters,
         )}
       >
-        <Slate editor={editor} value={defaultEditorValue}>
+        <Slate
+          editor={editor}
+          value={defaultEditorValue}
+          onChange={() => {
+            const { selection } = editor;
+
+            if (selection && Range.isCollapsed(selection)) {
+              const [start] = Range.edges(selection);
+              const wordBefore = Editor.before(editor, start, { unit: 'word' });
+              const before = wordBefore && Editor.before(editor, wordBefore);
+              const beforeRange = before && Editor.range(editor, before, start);
+              const beforeText = beforeRange && Editor.string(editor, beforeRange);
+              const beforeMatch = beforeText && beforeText.match(/^@(\w+)$/);
+              const after = Editor.after(editor, start);
+              const afterRange = Editor.range(editor, start, after);
+              const afterText = Editor.string(editor, afterRange);
+              const afterMatch = afterText.match(/^(\s|$)/);
+
+              if (beforeMatch && afterMatch) {
+                setShowingAutoCompleteMenu(true);
+              }
+            }
+          }}
+        >
           <Editable
             className="chat-text-input"
             onKeyDown={onKeyDown}
@@ -263,6 +353,34 @@ export const ChatTextField: FC<ChatTextFieldProps> = ({ defaultText, enabled }) 
             onOpenChange={open => setShowEmojis(open)}
             open={showEmojis}
           />
+          {showingAutoCompleteMenu && (
+            <Select
+              defaultOpen
+              open
+              showArrow={false}
+              bordered={false}
+              dropdownMatchSelectWidth={false}
+              placement="topRight"
+              className={styles.autocompleteSelectMenu}
+              options={chatUserNames?.map(char => ({
+                value: char,
+                label: char,
+              }))}
+              onSelect={value => {
+                // Transforms.select(editor, target);
+                insertMention(editor, value);
+                setShowingAutoCompleteMenu(false);
+              }}
+              onInputKeyDown={e => {
+                if (e.key === 'Escape') {
+                  setShowingAutoCompleteMenu(false);
+                }
+              }}
+              // style={{ zIndex: 9999 }}
+              getPopupContainer={() => inputRef.current}
+              onBlur={() => setShowingAutoCompleteMenu(false)}
+            />
+          )}
         </Slate>
 
         {enabled && (

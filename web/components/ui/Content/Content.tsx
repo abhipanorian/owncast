@@ -17,6 +17,7 @@ import {
   isOnlineSelector,
   isMobileAtom,
   serverStatusState,
+  knownChatUserDisplayNamesAtom,
 } from '../../stores/ClientConfigStore';
 import { ClientConfig } from '../../../interfaces/client-config.model';
 
@@ -97,6 +98,7 @@ export const Content: FC = () => {
   const [isMobile, setIsMobile] = useRecoilState<boolean | undefined>(isMobileAtom);
   const messages = useRecoilValue<ChatMessage[]>(chatMessagesAtom);
   const online = useRecoilValue<boolean>(isOnlineSelector);
+  const knownChatUserDisplayNames = useRecoilValue(knownChatUserDisplayNamesAtom);
 
   const { viewerCount, lastConnectTime, lastDisconnectTime, streamTitle } =
     useRecoilValue<ServerStatus>(serverStatusState);
@@ -268,6 +270,7 @@ export const Content: FC = () => {
               setShowFollowModal={setShowFollowModal}
               supportFediverseFeatures={supportFediverseFeatures}
               chatEnabled={isChatAvailable}
+              knownChatUserDisplayNames={knownChatUserDisplayNames}
             />
           ) : (
             <Col span={24} style={{ paddingRight: dynamicPadding }}>
